@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Peter小黃人 - 破解外送演算法</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; background: #121212; color: #fff; margin: 0; padding: 15px; text-align: center; }
+        h1 { color: #ffcc00; font-size: 24px; margin-bottom: 5px; }
+        .red-alert { background: #ff3333; color: white; padding: 10px; font-weight: bold; border-radius: 5px; display: none; margin: 10px 0; animation: blink 1s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .dashboard { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; background: #222; padding: 15px; border-radius: 8px; margin-bottom: 15px; font-size: 14px; }
+        .panel { background: #1e1e1e; padding: 10px; border: 1px solid #333; border-radius: 5px; margin-bottom: 10px; }
+        select, button { width: 100%; padding: 12px; margin: 5px 0; background: #ffcc00; border: none; font-weight: bold; font-size: 16px; border-radius: 5px; cursor: pointer; color: #000; }
+        button:hover { background: #ffe066; }
+        .map-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; background: #333; padding: 5px; border-radius: 5px; margin: 15px 0; }
+        .cell { aspect-ratio: 1; background: #444; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 12px; position: relative; }
+        .cell.active { background: #ffcc00; color: black; font-weight: bold; }
+        .cell.order { background: #00cc66; }
+        .cell.restaurant { background: #3399ff; }
+        .cell.alert { background: #ff3333; }
+        .log-box { background: #000; color: #00ff00; font-family: monospace; padding: 10px; text-align: left; height: 100px; overflow-y: auto; font-size: 12px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+    <h1>🎮 Peter小黃人</h1>
+    <p style="font-size:12px; color:#aaa; margin:0;">光曜互動科技 - 破解演算法對抗賽</p>
+
+    <div class="red-alert" id="redAlert">🚨 西客/西餐廳自動紅色警報：茶餐廳拖單中！</div>
+
+    <!-- 儀表板 -->
+    <div class="dashboard">
+        <div>⏳ 遊戲時間: <span id="gameTime">08:00</span></div>
+        <div>💰 總利潤: <span id="earnings">HK$ 0</span></div>
+        <div>📦 當前載貨: <span id="cargo">0</span> / <span id="maxCargo">1</span></div>
+        <div>📍 當前位置: <span id="currentLoc">將軍澳</span></div>
+    </div>
+
+    <!-- 遊戲配置分部 -->
+    <div class="panel">
+        <label>選擇配送地圖區域：</label>
+        <select id="regionSelect" onchange="changeRegion()">
+            <option value="將軍澳">將軍澳 (單車徑多)</option>
+            <option value="中環">中環 (塞車地獄)</option>
+            <option value="旺角">旺角 (抄牌高危)</option>
+            <option value="沙田">沙田 (路程極遠)</option>
+            <option value="東涌">東涌 (天涯海角)</option>
+        </select>
+
+        <label>選擇送遞工具（現實數值模擬）：</label>
+        <select id="toolSelect" onchange="updateTool()">
+            <option value="步兵">雙足 (載量1 | 運費低 | 不塞車)</option>
+            <option value="單車">人力單車 (載量2 | 速度中 | 康城神車)</option>
+            <option value="電單車">電單車 (載量4 | 速度快 | 有抄牌風險)</option>
+            <option value="私家車">私家車 (載量8 | 衝公路 | 塞車+$320風險)</option>
+        </select>
+    </div>
+
+    <!-- 2D平面香港生成地圖 -->
+    <div class="map-grid" id="mapGrid"></div>
+
+    <button onclick="startDelivery()">🚀 演算法最優路線：一鍵全自動送單</button>
+
+    <div class="log-box" id="logBox">系統初始化... 準備破解演算法。</div>
+
+    <script>
+        // 核心數值矩陣
+        const tools = {
+            '步兵': { maxCargo: 1, speed: 1, baseFee: 25, trafficImpact: 0 },
+            '單車': { maxCargo: 2, speed: 1.5, baseFee: 30, trafficImpact: 0.1 },
+            '電單車': { maxCargo: 4, speed: 3, baseFee: 45, trafficImpact: 0.3 },
+            '私家車': { maxCargo: 8, speed: 4, baseFee: 65, trafficImpact: 0.6 }
+        };
+
+        let currentTool = '步兵';
+        let currentRegion = '將軍澳';
+        let totalEarnings = 0;
+        let currentCargo = 0;
+        let gameMinutes = 480; // 早上 8:00 = 480 分鐘
+        let playerPos = 0;
+        let restaurantPos = 4;
+        let orderPos = 22;
+
+        // 初始化地圖 (5x5 網格平面生成模式)
+        function generateMap() {
+            const grid = document.getElementById('mapGrid');
+            grid.innerHTML = '';
+            for(let i=0; i<25; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                if(i === playerPos) { cell.className += ' active'; cell.innerText = '🏃'; }
+                else if(i === restaurantPos) { cell.className += ' restaurant'; cell.innerText = '🍱'; }
+                else if(i === orderPos) { cell.className += ' order'; cell.innerText = '🏠'; }
+                grid.appendChild(cell);
+            }
+        }
+
+        function updateTool() {
+            currentTool = document.getElementById('toolSelect').value;
+            document.getElementById('maxCargo').innerText = tools[currentTool].maxCargo;
+            log(`更換工具為：${currentTool}，載量上限變更為 ${tools[currentTool].maxCargo} 單。`);
+        }
+
+        function changeRegion() {
+            currentRegion = document.getElementById('regionSelect').value;
+            document.getElementById('currentLoc').innerText = currentRegion;
+            log(`成功切換戰區至：【${currentRegion}】`);
+            randomizeMap();
+        }
+
+        function randomizeMap() {
+            restaurantPos = Math.floor(Math.random() * 10) + 1;
+            orderPos = Math.floor(Math.random() * 10) + 14;
+            generateMap();
+        }
+
+        function log(msg) {
+            const box = document.getElementById('logBox');
+            box.innerHTML += `<br>> ${msg}`;
+            box.scrollTop = box.scrollHeight;
+        }
+
+        // 模擬快10倍的時間齒輪 (現實1秒 = 遊戲10秒，現實2小時 = 遊戲20分鐘結束)
+        setInterval(() => {
+            gameMinutes += 1;
+            let hrs = Math.floor(gameMinutes / 60);
+            let mins = gameMinutes % 60;
+            document.getElementById('gameTime').innerText = `${hrs.toString().padStart(2,'0')}:${mins.toString().padStart(2,'0')}`;
+            
+            // 隨機西客西餐廳自動紅色警報
+            if(Math.random() < 0.05) {
+                triggerRedAlert();
+            }
+        }, 1000);
+
+        function triggerRedAlert() {
+            const alertBanner = document.getElementById('redAlert');
+            const alerts = [
+                "🚨 紅色警報：西客備註要求『順便買包煙否則俾負評』！",
+                "🚨 紅色警報：茶餐廳廚房內訌，強行拖單 20 分鐘！",
+                "🚨 紅色警報：前方道路抄牌高危，演算法強行繞路！"
+            ];
+            alertBanner.innerText = alerts[Math.floor(Math.random() * alerts.length)];
+            alertBanner.style.display = 'block';
+            setTimeout(() => { alertBanner.style.display = 'none'; }, 4000);
+        }
+
+        // 最優路線算法 (A* Dijkstra 精簡版模擬)
+        function startDelivery() {
+            if(currentCargo >= tools[currentTool].maxCargo) {
+                log("🚨 爆單啦！先去送完手頭上呢幾單！");
+                return;
+            }
+            log(`🤖 啟動光曜反演算法：正在為${currentTool}計算最省時路線...`);
+            
+            let steps = 0;
+            let interval = setInterval(() => {
+                if(playerPos !== restaurantPos && currentCargo === 0) {
+                    playerPos += (playerPos < restaurantPos) ? 1 : -1;
+                } else if(playerPos === restaurantPos && currentCargo === 0) {
+                    currentCargo = tools[currentTool].maxCargo;
+                    document.getElementById('cargo').innerText = currentCargo;
+                    log(`🍱 到達茶餐廳！一網打盡取走 ${currentCargo} 張單。`);
+                } else if(playerPos !== orderPos && currentCargo > 0) {
+                    playerPos += (playerPos < orderPos) ? 5 : -5;
+                } else if(playerPos === orderPos && currentCargo > 0) {
+                    clearInterval(interval);
+                    let fee = tools[currentTool].baseFee * currentCargo;
+                    if(currentRegion === '東涌' || currentRegion === '中環') fee *= 1.2; // 偏遠/塞車加成
+                    totalEarnings += Math.floor(fee);
+                    currentCargo = 0;
+                    document.getElementById('earnings').innerText = `HK$ ${totalEarnings}`;
+                    document.getElementById('cargo').innerText = currentCargo;
+                    log(`✅ 成功破解演算法安全送達！進賬 HK$ ${Math.floor(fee)}！`);
+                    randomizeMap();
+                }
+                generateMap();
+            }, 300);
+        }
+
+        // 初始化
+        generateMap();
+    </script>
+</body>
+</html>
